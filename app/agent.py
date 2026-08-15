@@ -290,14 +290,16 @@ class SearchSentinelAgent:
     def detect_ranking_anomalies(self, query: str) -> dict[str, Any]:
         """Detect ranking volatility using z-score of mean rank across snapshots."""
         snaps = store.get_snapshots(query, limit=20)
-        if len(snaps) < 2:
-            # not enough history — record a snapshot then evaluate
-            snaps_meta = self.track_rankings(query)
+        if len(snaps) < 4:
+            # cold start: seed enough snapshots to make the z-score meaningful
+            for _ in range(4 - len(snaps)):
+                self.track_rankings(query)
             snaps = store.get_snapshots(query, limit=20)
 
         if len(snaps) < 2:
             return {"tool": "detect_ranking_anomalies", "query": query,
-                    "anomalies": [], "message": "Insufficient history (need >=2 snapshots)."}
+                    "z_score": 0.0, "is_anomaly": False, "mean_rank_series": [],
+                    "anomaly": None, "message": "Insufficient history (need >=2 snapshots)."}
 
         mean_ranks = [_mean([r.get("position", 0) for r in s["rankings"]]) for s in snaps]
         latest = mean_ranks[-1]
@@ -339,13 +341,17 @@ class SearchSentinelAgent:
         """Detect new/disappeared results via Jaccard distance vs baseline."""
         snaps = store.get_snapshots(query, limit=20)
         if len(snaps) < 2:
-            self.track_rankings(query)
+            # cold start: seed a couple of snapshots to establish a baseline
+            for _ in range(2):
+                self.track_rankings(query)
             snaps = store.get_snapshots(query, limit=20)
 
         baseline_urls = store.baselines.get(query, set())
         if not snaps or not baseline_urls:
             return {"tool": "detect_result_set_churn", "query": query,
-                    "churn": 0.0, "message": "No baseline established yet."}
+                    "churn_score": 0.0, "is_anomaly": False,
+                    "new_results": 0, "disappeared_results": 0,
+                    "anomaly": None, "message": "No baseline established yet."}
 
         current_urls = {r["url"] for r in snaps[-1]["rankings"]}
         churn = _jaccard(baseline_urls, current_urls)
